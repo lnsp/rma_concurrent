@@ -139,15 +139,18 @@ void BSL::insert(int64_t key, int64_t value) {
         if ((current_versions[lockLevel] != current_blocks[lockLevel]->version)
          || (previous_blocks[lockLevel] && previous_versions[lockLevel] != previous_blocks[lockLevel]->version)
          || (previous_blocks[lockLevel]->forward[lockLevel] != current_blocks[lockLevel])) {
+            COUT_DEBUG("Detected conflict on level=" << lockLevel << ", unlocking now");
             // Unlock all nodes with higher lock level
             lockedPrevBlock = lockedCurrBlock = nullptr;
-            for (auto i = lockLevel; i < maxlevel; i++) {
+            for (auto i = lockLevel; i <= maxlevel; i++) {
                 // Unlock nodes
                 if (lockedCurrBlock != current_blocks[i]) {
+                    COUT_DEBUG("Unlocking current=" << current_blocks[i]->anchor << " on level=" << i);
                     current_blocks[i]->mu.unlock();
                     lockedCurrBlock = current_blocks[i];
                 }
                 if (lockedPrevBlock != previous_blocks[i]) {
+                    COUT_DEBUG("Unlocking previous=" << previous_blocks[i]->anchor << " on level=" << i);
                     previous_blocks[i]->mu.unlock();
                     lockedPrevBlock = previous_blocks[i];
                 }
@@ -186,10 +189,19 @@ void BSL::insert(int64_t key, int64_t value) {
     }
 
     // Unlock nodes from the bottom up
+    lockedCurrBlock = lockedPrevBlock = nullptr;
     for (auto i = 0; i <= maxlevel; i++) {
         // Unlock nodes
-        previous_blocks[i]->mu.unlock();
-        current_blocks[i]->mu.unlock();
+        if (lockedCurrBlock != current_blocks[i]) {
+            COUT_DEBUG("Unlocking current=" << current_blocks[i]->anchor << " on level=" << i);
+            current_blocks[i]->mu.unlock();
+            lockedCurrBlock = current_blocks[i];
+        }
+        if (lockedPrevBlock != previous_blocks[i]) {
+            COUT_DEBUG("Unlocking previous=" << previous_blocks[i]->anchor << " on level=" << i);
+            previous_blocks[i]->mu.unlock();
+            lockedPrevBlock = previous_blocks[i];
+        }
     }
 }
 

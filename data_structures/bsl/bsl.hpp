@@ -13,7 +13,7 @@
 using namespace std;
 
 namespace data_structures::bsl {
-#define DEBUG
+//#define DEBUG
 #if defined(DEBUG)
     static mutex _local_mutex;
     #define COUT_DEBUG(msg) { lock_guard<mutex> _lock(_local_mutex); \
