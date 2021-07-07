@@ -43,6 +43,7 @@
 #include "bwtree/openbwtree.hpp"
 #include "masstree/parallel.hpp"
 #include "masstree/sequential.hpp"
+#include "bsl/bsl.hpp"
 
 #include "rma/baseline/packed_memory_array.hpp"
 #include "rma/batch_processing/packed_memory_array.hpp"
@@ -201,6 +202,11 @@ void initialise() {
     REGISTER_DATA_STRUCTURE("openbwtree", "OpenBwTree, default parameters. The runtime values for the inner & leaf nodes are ignored (they need to be set at compile time).", [](){
         LOG_VERBOSE("[openbwtree]");
         return make_unique<bwtree::OpenBwTree>();
+    });
+
+    REGISTER_DATA_STRUCTURE("bsl",  "BSL", [](){
+        LOG_VERBOSE("[bsl]");
+        return make_unique<bsl::BSL>();
     });
 
     REGISTER_DATA_STRUCTURE("abtree_parallel", "Parallel implementation of an ab-tree using ART as secondary index. The parameter for the inner node capacity is ignored.", [](){
