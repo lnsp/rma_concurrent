@@ -13,7 +13,7 @@
 using namespace std;
 
 namespace data_structures::bsl {
-//#define DEBUG
+#define DEBUG
 #if defined(DEBUG)
     static mutex _local_mutex;
     #define COUT_DEBUG(msg) { lock_guard<mutex> _lock(_local_mutex); \
@@ -37,12 +37,13 @@ int64_t anchor;
 std::vector<BSLNode> values;
 bool insert(int64_t key, int64_t value);
 int64_t find(int64_t key);
+size_t size();
 };
 
 class BSL: public data_structures::Interface {
 private:
     float p;
-    int64_t level, maxlevel, maxblksize;
+    int64_t maxlevel, maxblksize;
     std::atomic<size_t> cardinality;
     BSLBlock* head;
     int64_t randLevel() const;

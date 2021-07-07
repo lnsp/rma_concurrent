@@ -1,5 +1,6 @@
 #include "bsl.hpp"
 #include <algorithm>
+#include <thread>
 
 
 namespace data_structures::bsl {
@@ -31,23 +32,28 @@ int64_t BSLBlock::find(int64_t key) {
     return -1;
 }
 
+size_t BSLBlock::size() {
+    return values.size();
+}
+
 BSL::BSL(float p, int64_t maxlevel, int64_t maxblksize) {
     this->p = p;
     this->maxlevel = maxlevel;
     this->maxblksize = maxblksize;
-    this->level = 0;
 
     // Construct empty BSL
     int64_t anchorBot0 = std::numeric_limits<int64_t>::min();
     int64_t anchorBot1 = std::numeric_limits<int64_t>::min()+1;
     int64_t anchorTop0 = std::numeric_limits<int64_t>::max();
 
-    head = new BSLBlock(anchorBot0, maxlevel);
-    auto base = new BSLBlock(anchorBot1, maxlevel);
-    auto tail = new BSLBlock(anchorTop0, maxlevel);
+    head = new BSLBlock(anchorBot0, maxlevel+1);
+    auto base = new BSLBlock(anchorBot1, maxlevel+1);
+    auto tail = new BSLBlock(anchorTop0, maxlevel+1);
 
-    head->forward[0] = base;
-    base->forward[0] = tail;
+    for (auto i = 0; i <= maxlevel; i++) {
+        head->forward[i] = base;
+        base->forward[i] = tail;
+    }
 
     COUT_DEBUG("Initialized with maxlevel=" << maxlevel << " and p=" << p);
 }
@@ -64,29 +70,30 @@ int64_t BSL::randLevel() const {
 
 void BSL::insert(int64_t key, int64_t value) {
     restart:
-    // Remember nodes to update in case of overflow
-    std::vector<int64_t> previous_versions(maxlevel);
-    std::vector<BSLBlock*> previous_blocks(maxlevel);
-    std::vector<int64_t> current_versions(maxlevel);
-    std::vector<BSLBlock*> current_blocks(maxlevel);
 
-    current_versions[level] = head->version;
-    current_blocks[level] = head;
+    // Previous -> Current, where previous is the node that
+    // should contain the value and current is the node where it may point.
+    std::vector<int64_t> previous_versions(maxlevel+1);
+    std::vector<BSLBlock*> previous_blocks(maxlevel+1);
 
-    COUT_DEBUG("Inserting key=" << key << " on level=" << level);
+    std::vector<int64_t> current_versions(maxlevel+1);
+    std::vector<BSLBlock*> current_blocks(maxlevel+1);
 
-    // Walk down levels
-    for (auto i = level; i >= 0; i--) {
-        if (current_versions[i] != current_blocks[i]->version) goto restart;
-        if (previous_blocks[i] && previous_versions[i] != previous_blocks[i]->version) goto restart;
+    // Set current to head node, track version
+    current_versions[maxlevel] = head->version;
+    current_blocks[maxlevel] = head;
 
-        COUT_DEBUG("Checking node=" << std::hex << current->forward[i] << " with level=" << i);
-        // walk forward until next anchor is larger than key
-        // this guarantees that the next node can not contain our key
-        while (current_blocks[i]->forward[i] != nullptr
-               && current_blocks[i]->forward[i]->anchor <= key) {
-            if (current_versions[i] != current_blocks[i]->version) goto restart;
-            if (previous_blocks[i] && previous_versions[i] != previous_blocks[i]->version) goto restart;
+    // Search in skip list
+    for (auto i = maxlevel; i >= 0; i--) {
+        // Make sure that versions match up
+        if ((current_versions[i] != current_blocks[i]->version)) goto restart;
+
+        COUT_DEBUG("Checking node=" << std::hex << current_blocks[i] << " with anchor=" << std::dec << current_blocks[i]->anchor << " at level=" << std::dec << i);
+
+        // Move forwards as long as the current node may contain the key
+        while (current_blocks[i]->anchor <= key) {
+            if ((current_versions[i] != current_blocks[i]->version)
+             || (previous_blocks[i] && previous_versions[i] != previous_blocks[i]->version)) goto restart;
 
             previous_versions[i] = current_versions[i];
             previous_blocks[i] = current_blocks[i];
@@ -94,63 +101,102 @@ void BSL::insert(int64_t key, int64_t value) {
             current_versions[i] = current_blocks[i]->forward[i]->version;
             current_blocks[i] = current_blocks[i]->forward[i];
 
-            COUT_DEBUG("Skipping forward to node=" << std::hex << current << " with level=" << i);
+            COUT_DEBUG("Skipping forward to node=" << std::hex << current_blocks[i] << " with anchor=" << std::dec << current_blocks[i]->anchor);
+        }
+
+        COUT_DEBUG("Determined prev anchor=" << previous_blocks[i]->anchor << ", current anchor=" <<  current_blocks[i]->anchor << " at level " << i);
+
+        // :: current_blocks[i]->anchor > key => current does not contain key
+        // :: previous_blocks[i]->anchor <= key => current may contain key
+
+        // Copy down starting point for next iteration
+        if (i > 0) {
+            current_versions[i-1] = previous_versions[i];
+            current_blocks[i-1] = previous_blocks[i];
+        }
+
+        // std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    COUT_DEBUG("Inserting on anchor=" << std::dec << previous_blocks[0]->anchor);
+
+    BSLBlock *lockedPrevBlock = nullptr, *lockedCurrBlock = nullptr;
+    // Validate versions and lock nodes
+    for (auto lockLevel = maxlevel; lockLevel >= 0; lockLevel--) {
+        COUT_DEBUG("Locking level " << lockLevel << " with previous=" << std::hex << previous_blocks[lockLevel] << " and current=" << current_blocks[lockLevel] << std::dec);
+        // Lock nodes
+        if (lockedPrevBlock != previous_blocks[lockLevel]) {
+            COUT_DEBUG("Locking previous=" << previous_blocks[lockLevel]->anchor << " on level=" << lockLevel);
+            previous_blocks[lockLevel]->mu.lock();
+            lockedPrevBlock = previous_blocks[lockLevel];
+        }
+        if (lockedCurrBlock != current_blocks[lockLevel] && current_blocks[lockLevel]) {
+            COUT_DEBUG("Locking current=" << current_blocks[lockLevel]->anchor << " on level=" << lockLevel);
+            current_blocks[lockLevel]->mu.lock();
+            lockedCurrBlock = current_blocks[lockLevel];
+        }
+        // Check versions and pointers
+        if ((current_versions[lockLevel] != current_blocks[lockLevel]->version)
+         || (previous_blocks[lockLevel] && previous_versions[lockLevel] != previous_blocks[lockLevel]->version)
+         || (previous_blocks[lockLevel]->forward[lockLevel] != current_blocks[lockLevel])) {
+            // Unlock all nodes with higher lock level
+            lockedPrevBlock = lockedCurrBlock = nullptr;
+            for (auto i = lockLevel; i < maxlevel; i++) {
+                // Unlock nodes
+                if (lockedCurrBlock != current_blocks[i]) {
+                    current_blocks[i]->mu.unlock();
+                    lockedCurrBlock = current_blocks[i];
+                }
+                if (lockedPrevBlock != previous_blocks[i]) {
+                    previous_blocks[i]->mu.unlock();
+                    lockedPrevBlock = previous_blocks[i];
+                }
+            }
+            goto restart;
         }
     }
 
-    // Walk down and lock every preds on the path if they are not the same
-    BSLBlock* prevBlock = nullptr;
-    for (auto i = level; i >= 0; i--) {
-        if (current_blocks[i] != prevBlock) {
+    // Insert into block
+    if (previous_blocks[0]->insert(key, value)) cardinality++;
+
+    // Check if rebalance is required
+    if (previous_blocks[0]->size() > maxblksize) {
+        // Do rebalance here
+        COUT_DEBUG("Node " << previous_blocks[0]->anchor << " reached size of " << previous_blocks[0]->size() << ", need to rebalance");
+        // We determine the next anchor by sorting
+        std::sort(previous_blocks[0]->values.begin(), previous_blocks[0]->values.end(), [](auto x, auto y) { return x.key < y.key; });
+        // and picking the value in the middle
+        auto anchorIt = previous_blocks[0]->values.begin() + (previous_blocks[0]->values.size()/2);
+        // Then we allocate a new BSL block
+        BSLBlock* next = new BSLBlock(anchorIt->key, maxlevel);
+        next->values.reserve(previous_blocks[0]->values.end() - anchorIt);
+        next->values.insert(next->values.begin(), anchorIt, previous_blocks[0]->values.end());
+        // And drop the values from the old block
+        previous_blocks[0]->values.resize(anchorIt - previous_blocks[0]->values.begin());
+
+        auto rlevel = randLevel();
+        for (auto i = 0; i <= rlevel; i++) {
+          next->forward[i] = current_blocks[i];
+          current_blocks[i]->version++;
+          previous_blocks[i]->forward[i] = next;
+          previous_blocks[i]->version++;
         }
+
+        COUT_DEBUG("Inserted key=" << key);
     }
 
-
-    COUT_DEBUG("Inserting on anchor=" << std::dec << current->anchor);
-
-    // do linear search
-    if (current->insert(key, value)) cardinality++;
-
-    // check if everything is fine
-    if (current->values.size() <= maxblksize) {
-        return;
+    // Unlock nodes from the bottom up
+    for (auto i = 0; i <= maxlevel; i++) {
+        // Unlock nodes
+        previous_blocks[i]->mu.unlock();
+        current_blocks[i]->mu.unlock();
     }
-
-    // rebalance by splitting node
-    COUT_DEBUG("Current node reached size of " << current->values.size() << ", need to rebalance");
-    // split node here
-    // we need to insert another node after the current one
-    // first: determine next anchor via sort
-    // TODO: is there a better method to do this?
-    std::sort(current->values.begin(), current->values.end(), [](auto x, auto y) { return x.key < y.key; });
-    // pick the value in the middle
-    auto anchorIt = current->values.begin() + (current->values.size()/2);
-    BSLBlock* next = new BSLBlock(anchorIt->key, maxlevel);
-    next->values.reserve(current->values.end() - anchorIt);
-    next->values.insert(next->values.begin(), anchorIt, current->values.end());
-    current->values.resize(anchorIt - current->values.begin());
-
-    // else we need to add a new node
-    int rlevel = randLevel();
-    if (rlevel > level) {
-        for (auto i = level+1; i <= rlevel; i++) {
-            updates[i] = head;
-        }
-        level = rlevel;
-    }
-
-    for (auto i = 0; i <= rlevel; i++) {
-      next->forward[i] = updates[i]->forward[i];
-      updates[i]->forward[i] = next;
-    }
-
-    COUT_DEBUG("Inserted key=" << key);
 }
 
 int64_t BSL::find(int64_t key) const {
     // Walk down BSL
     BSLBlock* current = head;
-    for (auto i = level; i >= 0; i--) {
+    for (auto i = maxlevel; i >= 0; i--) {
         // walk forward until next anchor is larger than key
         // this guarantees that the next node can not contain our key
         while (current->forward[i] != nullptr
@@ -193,7 +239,7 @@ void BSL::dump() const {
         std::cout << "[anchor="
                   << node->anchor
                   << " forward={ ";
-        for (auto i = 0; i <= level; i++) {
+        for (auto i = 0; i <= maxlevel; i++) {
             if (node->forward[i] != nullptr) {
                 std::cout << node->forward[i]->anchor << " ";
             }
