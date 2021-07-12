@@ -38,7 +38,6 @@ std::vector<BSLBlock*> forward;
 BSLBlock(int64_t anchor, int64_t level);
 
 int64_t anchor;
-tbb::spin_mutex vmu;
 std::vector<BSLNode> values;
 bool insert(int64_t key, int64_t value);
 int64_t find(int64_t key);

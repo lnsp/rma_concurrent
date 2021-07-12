@@ -104,7 +104,7 @@ void BSL::insert(int64_t key, int64_t value) {
         // Make sure that versions match up
         if ((current_versions[i] != current_blocks[i]->version)) goto restart;
 
-        COUT_DEBUG("Checking node=" << std::hex << current_blocks[i] << " with anchor=" << std::dec << current_blocks[i]->anchor << " at level=" << std::dec << i);
+        INSERT_DEBUG("Checking node=" << std::hex << current_blocks[i] << " with anchor=" << std::dec << current_blocks[i]->anchor << " at level=" << std::dec << i);
 
         // Move forwards as long as the current node may contain the key
         while (current_blocks[i]->anchor <= key) {
@@ -117,10 +117,10 @@ void BSL::insert(int64_t key, int64_t value) {
             current_versions[i] = current_blocks[i]->forward[i]->version;
             current_blocks[i] = current_blocks[i]->forward[i];
 
-            COUT_DEBUG("Skipping forward to node=" << std::hex << current_blocks[i] << " with anchor=" << std::dec << current_blocks[i]->anchor);
+            INSERT_DEBUG("Skipping forward to node=" << std::hex << current_blocks[i] << " with anchor=" << std::dec << current_blocks[i]->anchor);
         }
 
-        COUT_DEBUG("Determined prev anchor=" << previous_blocks[i]->anchor << ", current anchor=" <<  current_blocks[i]->anchor << " at level " << i);
+        INSERT_DEBUG("Determined prev anchor=" << previous_blocks[i]->anchor << ", current anchor=" <<  current_blocks[i]->anchor << " at level " << i);
 
         // :: current_blocks[i]->anchor > key => current does not contain key
         // :: previous_blocks[i]->anchor <= key => current may contain key
@@ -134,7 +134,8 @@ void BSL::insert(int64_t key, int64_t value) {
         // std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    COUT_DEBUG("Inserting on anchor=" << std::dec << previous_blocks[0]->anchor);
+    INSERT_DEBUG("Inserting on anchor=" << std::dec << previous_blocks[0]->anchor);
+
 
     // If we only insert into the block, we do not need to lock the entire tree
     //if (!has_inserted) {
@@ -153,45 +154,47 @@ void BSL::insert(int64_t key, int64_t value) {
     //    // Check for rebalancing
     //    if (!need_rebalance) return;
     //}
-    COUT_DEBUG("Inserting key=" << key << " into anchor=" << previous_blocks[0]->anchor);
+    INSERT_DEBUG("Inserting key=" << key << " into anchor=" << previous_blocks[0]->anchor);
 
     // Lock up to rlevel
     auto rlevel = randLevel();
 
+validate_versions:
     BSLBlock *lockedPrevBlock = nullptr, *lockedCurrBlock = nullptr;
     // Validate versions and lock nodes
     for (auto lockLevel = rlevel; lockLevel >= 0; lockLevel--) {
-        COUT_DEBUG("[Insert] Locking level " << lockLevel << " with previous=" << std::hex << previous_blocks[lockLevel] << " and current=" << current_blocks[lockLevel] << std::dec);
+        INSERT_DEBUG("Locking level " << lockLevel << " with previous=" << std::hex << previous_blocks[lockLevel] << " and current=" << current_blocks[lockLevel] << std::dec);
         // Attempt to obtain level lock
-        bool failed_prev_lock = false, failed_curr_lock = false;
+        bool failedPrevLock = false, failedCurrentLock = false;
         if (lockedPrevBlock != previous_blocks[lockLevel]) {
             if (previous_blocks[lockLevel]->mu.try_lock()) {
                 lockedPrevBlock = previous_blocks[lockLevel];
-            } else failed_prev_lock = true;
+            } else failedPrevLock = true;
         }
         if (lockedCurrBlock != current_blocks[lockLevel] && current_blocks[lockLevel]) {
             if (current_blocks[lockLevel]->mu.try_lock()) {
                 lockedCurrBlock = current_blocks[lockLevel];
-            } else failed_curr_lock = true;
+            } else failedCurrentLock = true;
         }
+        
         // Check versions and pointers
         if ((current_versions[lockLevel] != current_blocks[lockLevel]->version)
          || (previous_blocks[lockLevel] && previous_versions[lockLevel] != previous_blocks[lockLevel]->version)
          || (previous_blocks[lockLevel]->forward[lockLevel] != current_blocks[lockLevel])
-         || failed_curr_lock || failed_prev_lock) {
-            COUT_DEBUG("[Insert] Detected conflict on level=" << lockLevel << ", unlocking now");
+         || failedPrevLock || failedCurrentLock) {
+            INSERT_DEBUG("[Insert] Detected conflict on level=" << lockLevel << ", unlocking now");
 
             // Detect incomplete level lock
-            if (failed_prev_lock || failed_curr_lock) {
-                if (!failed_prev_lock) previous_blocks[lockLevel]->mu.unlock();
-                if (!failed_curr_lock) current_blocks[lockLevel]->mu.unlock();
+            if (failedPrevLock || failedCurrentLock) {
+                if (!failedPrevLock) previous_blocks[lockLevel]->mu.unlock();
+                if (!failedCurrentLock) current_blocks[lockLevel]->mu.unlock();
                 lockLevel++;
             }
 
             // Unlock all nodes with higher lock level
             lockedPrevBlock = lockedCurrBlock = nullptr;
             for (auto i = rlevel; i >= lockLevel; i--) {
-                COUT_DEBUG("[Remove] Unlocking level " << lockLevel << " with previous=" << std::hex << previous_blocks[i] << " and current=" << current_blocks[i] << std::dec);
+                INSERT_DEBUG("Unlocking level " << lockLevel << " with previous=" << std::hex << previous_blocks[i] << " and current=" << current_blocks[i] << std::dec);
                 if (lockedPrevBlock != previous_blocks[i]) {
                     previous_blocks[i]->mu.unlock();
                     lockedPrevBlock = previous_blocks[i];
@@ -202,6 +205,8 @@ void BSL::insert(int64_t key, int64_t value) {
                     lockedCurrBlock = current_blocks[i];
                 }
             }
+
+            if (failedPrevLock || failedCurrentLock) goto validate_versions;
             goto restart;
         }
     }
@@ -210,7 +215,7 @@ void BSL::insert(int64_t key, int64_t value) {
 
     if (previous_blocks[0]->size() > maxblksize) {
         // Do rebalance here
-        COUT_DEBUG("Node " << previous_blocks[0]->anchor << " reached size of " << previous_blocks[0]->size() << ", need to rebalance");
+        INSERT_DEBUG("Node " << previous_blocks[0]->anchor << " reached size of " << previous_blocks[0]->size() << ", need to rebalance");
         // We determine the next anchor by sorting
         // Just pick mid value as split
         std::sort(previous_blocks[0]->values.begin(), previous_blocks[0]->values.end(), [](auto x, auto y) { return x.key < y.key; });
@@ -233,28 +238,28 @@ void BSL::insert(int64_t key, int64_t value) {
         // And drop the values from the old block
         previous_blocks[0]->values.resize(anchorIt - previous_blocks[0]->values.begin());
 
-        for (auto i = 0; i <= rlevel; i++) {
-            COUT_DEBUG("Rebalance with rlevel=" << i << " and maxlevel=" << maxlevel << " pointing to " << current_blocks[i]->anchor);
+        for (auto i = rlevel; i >= 0; i--) {
+            INSERT_DEBUG("Rebalance with rlevel=" << i << " and maxlevel=" << maxlevel << " pointing to " << current_blocks[i]->anchor);
             next->forward[i] = current_blocks[i];
             current_blocks[i]->version++;
             previous_blocks[i]->forward[i] = next;
             previous_blocks[i]->version++;
         }
 
-        COUT_DEBUG("Inserted key=" << key);
+        INSERT_DEBUG("Inserted key=" << key);
     }
 
     // Unlock nodes from the bottom up
     lockedCurrBlock = lockedPrevBlock = nullptr;
     for (auto i = rlevel; i >= 0; i--) {
         if (lockedPrevBlock != previous_blocks[i]) {
-            COUT_DEBUG("Unlocking previous=" << previous_blocks[i]->anchor << " on level=" << i);
+            INSERT_DEBUG("Unlocking previous=" << previous_blocks[i]->anchor << " on level=" << i);
             previous_blocks[i]->mu.unlock();
             lockedPrevBlock = previous_blocks[i];
         }
         // Unlock nodes
         if (lockedCurrBlock != current_blocks[i]) {
-            COUT_DEBUG("Unlocking current=" << current_blocks[i]->anchor << " on level=" << i);
+            INSERT_DEBUG("Unlocking current=" << current_blocks[i]->anchor << " on level=" << i);
             current_blocks[i]->mu.unlock();
             lockedCurrBlock = current_blocks[i];
         }
@@ -273,11 +278,16 @@ int64_t BSL::find(int64_t key) const {
                && current->forward[i]->anchor <= key) {
             if ((current_version != current->version)
              || (prev && prev_version != prev->version)) goto restart;
+
+            prev_version = current_version;
+            prev = current;
+            current_version = current->forward[i]->version;
             current = current->forward[i];
+
         }
-        if (i > 0) {
-        current_version = prev_version;
-        current = prev;
+            if (i > 0) {
+            current_version = prev_version;
+            current = prev;
         }
     }
 
@@ -391,6 +401,29 @@ int64_t BSL::remove(int64_t key) {
     REMOVE_DEBUG("Deleting key=" << key << " in anchor=" << current_blocks[0]->anchor);
     int64_t value = current_blocks[0]->remove(key);
     if (value != -1) cardinality--;
+
+    /*
+    if (previous_blocks[0] != head) {
+        // Merge back together if required
+        if (current_blocks[0]->size() == 0) {
+            // Just remove the current block, make all pointers from previous[0] that point to
+            // current, point to current->forward
+            for (auto i = 0; i <= rlevel; i++) {
+                previous_blocks[i]->forward[i] = current_blocks[i]->forward[i];
+                previous_versions[i]++;
+            }
+            current_versions[0]++;
+        } else if (previous_blocks[0]->size() + current_blocks[0]->size() < 0.5 * maxblksize) {
+            // Merge them back together
+            previous_blocks[0]->values.insert(previous_blocks[0]->values.end(), current_blocks[0]->values.begin(), current_blocks[0]->values.end());
+            for (auto i = 0; i <= rlevel; i++) {
+                previous_blocks[i]->forward[i] = current_blocks[i]->forward[i];
+                previous_versions[i]++;
+            }
+            current_versions[0]++;
+        }
+    }
+    */
 
     // Unlock nodes from the bottom up
     lockedPrevBlock = lockedCurrBlock = nullptr;
