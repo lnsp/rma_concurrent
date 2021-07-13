@@ -57,7 +57,7 @@ private:
     float p;
     int64_t maxlevel, maxblksize;
     std::atomic<size_t> cardinality;
-    BSLBlock* head;
+    BSLBlock *head, *base, *tail;
     int64_t randLevel() const;
 public:
     BSL(float p = 0.1, int64_t maxlevel = 16, int64_t maxblksize = 512);
